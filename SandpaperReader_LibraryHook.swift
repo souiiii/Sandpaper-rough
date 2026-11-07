@@ -775,7 +775,8 @@ struct SandpaperReaderView: View {
                         isBookmarked: $isBookmarked,
                         bodyFontSize: $bodyFontSize,
                         isShowingTypographyPopover: $isShowingTypographyPopover,
-                        showsCustomTrafficLights: !hostsNativeTrafficLights
+                        showsCustomTrafficLights: !hostsNativeTrafficLights,
+                        onBackToLibrary: onBackToLibrary
                     )
 
                     // Main Content Split: Reader ScrollView on Left + Optional Side Panel on Right
@@ -1041,10 +1042,7 @@ struct SandpaperReaderView: View {
         }
     }
 }
-
- 
-// MARK: - Dictionary Popover Overlay & Card (With Downward Floating Expansion)
-
+   
 private struct DictionaryPopoverOverlay: View {
     let entry: DictionaryEntry
     let explanation: ContextualExplanationEntry?
@@ -1422,6 +1420,52 @@ private struct DictionaryPopoverCard: View {
         return result
     }
 }
+     private struct PopoverCaretView: View {
+         let pointsDown: Bool
+         let caretCenterX: CGFloat
+         let caretWidth: CGFloat
+         let caretHeight: CGFloat
+
+         var body: some View {
+             Canvas { context, size in
+                 let halfW = caretWidth * 0.5
+                 let leftX = caretCenterX - halfW
+                 let rightX = caretCenterX + halfW
+
+                 var fillPath = Path()
+                 var strokePath = Path()
+
+                 if pointsDown {
+                     fillPath.move(to: CGPoint(x: leftX, y: 0))
+                     fillPath.addLine(to: CGPoint(x: rightX, y: 0))
+                     fillPath.addLine(to: CGPoint(x: caretCenterX, y: caretHeight))
+                     fillPath.closeSubpath()
+
+                     strokePath.move(to: CGPoint(x: leftX, y: 0.5))
+                     strokePath.addLine(to: CGPoint(x: caretCenterX, y: caretHeight))
+                     strokePath.addLine(to: CGPoint(x: rightX, y: 0.5))
+                 } else {
+                     fillPath.move(to: CGPoint(x: leftX, y: size.height))
+                     fillPath.addLine(to: CGPoint(x: caretCenterX, y: 0))
+                     fillPath.addLine(to: CGPoint(x: rightX, y: size.height))
+                     fillPath.closeSubpath()
+
+                     strokePath.move(to: CGPoint(x: leftX, y: size.height - 0.5))
+                     strokePath.addLine(to: CGPoint(x: caretCenterX, y: 0))
+                     strokePath.addLine(to: CGPoint(x: rightX, y: size.height - 0.5))
+                 }
+
+                 context.fill(fillPath, with: .color(SandpaperTheme.canvasBackground))
+                 context.stroke(
+                     strokePath,
+                     with: .color(SandpaperTheme.subtleStroke.opacity(0.75)),
+                     lineWidth: 1
+                 )
+             }
+             .allowsHitTesting(false)
+         }
+     }
+
      // MARK: - Top Toolbar & Progress Bar
 
      private struct ReaderToolbarView: View {
