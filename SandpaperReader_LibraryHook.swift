@@ -693,6 +693,8 @@ enum MockDictionaryProvider {
 
 struct SandpaperReaderView: View {
     let chapter: BookChapter
+    var bookID: String = "remains-of-the-day"
+    var vocabularyStore: SandpaperVocabularyStore? = nil
     var dictionaryLookup: @Sendable (String) -> DictionaryEntry = { MockDictionaryProvider.lookup($0) }
     var onPronounce: (@MainActor (DictionaryEntry) -> Void)?
     var onSaveToVocabulary: (@MainActor (DictionaryEntry) -> Void)?
@@ -719,6 +721,8 @@ struct SandpaperReaderView: View {
 
     init(
         chapter: BookChapter = .remainsOfTheDaySample,
+        bookID: String = "remains-of-the-day",
+        vocabularyStore: SandpaperVocabularyStore? = nil,
         initialSelection: ReaderTextSelection? = nil,
         initialExplanationMode: ExplanationPresentationMode = .hidden,
         initialExplanation: ContextualExplanationEntry? = nil,
@@ -729,6 +733,8 @@ struct SandpaperReaderView: View {
         onBackToLibrary: (@MainActor () -> Void)? = nil
     ) {
         self.chapter = chapter
+        self.bookID = bookID
+        self.vocabularyStore = vocabularyStore
         self.dictionaryLookup = dictionaryLookup
         self.onPronounce = onPronounce
         self.onSaveToVocabulary = onSaveToVocabulary
@@ -897,6 +903,11 @@ struct SandpaperReaderView: View {
                         chapterLabel: selectedChapter,
                         currentPage: chapter.currentPage
                     )
+                    let isContextuallySaved = vocabularyStore?.containsContextualEntry(
+                        expression: entry.expression,
+                        bookID: bookID,
+                        sourcePassage: selection.contextText
+                    ) ?? savedVocabularyIDs.contains(entry.id)
 
                     DictionaryPopoverOverlay(
                         entry: entry,
@@ -904,7 +915,7 @@ struct SandpaperReaderView: View {
                         isExplanationSaved: savedExplanationIDs.contains(currentExplanation.id),
                         selectionRect: selection.anchorRectInReader,
                         viewportSize: readerProxy.size,
-                        isSaved: savedVocabularyIDs.contains(entry.id),
+                        isSaved: isContextuallySaved,
                         popoverFrame: $popoverContainerRect,
                         onPronounce: {
                             if let onPronounce {
@@ -914,11 +925,22 @@ struct SandpaperReaderView: View {
                             }
                         },
                         onToggleSave: {
-                            if savedVocabularyIDs.contains(entry.id) {
-                                savedVocabularyIDs.remove(entry.id)
+                            if let vocabularyStore {
+                                vocabularyStore.toggleContextualEntry(
+                                    dictionaryEntry: entry,
+                                    selectedText: selection.selectedText,
+                                    sourcePassage: selection.contextText,
+                                    chapter: chapter,
+                                    bookID: bookID
+                                )
                             } else {
-                                savedVocabularyIDs.insert(entry.id)
+                                if savedVocabularyIDs.contains(entry.id) {
+                                    savedVocabularyIDs.remove(entry.id)
+                                } else {
+                                    savedVocabularyIDs.insert(entry.id)
+                                }
                             }
+
                             onSaveToVocabulary?(entry)
                         },
                         onExplainInContext: {
@@ -1042,7 +1064,8 @@ struct SandpaperReaderView: View {
         }
     }
 }
-   
+// MARK: - Dictionary Popover Overlay & Card (Static Top + Scrollable Bottom Drawer)
+
 private struct DictionaryPopoverOverlay: View {
     let entry: DictionaryEntry
     let explanation: ContextualExplanationEntry?
@@ -1081,6 +1104,7 @@ private struct DictionaryPopoverOverlay: View {
             entry: entry,
             explanation: explanation,
             isExplanationSaved: isExplanationSaved,
+            maxDrawerHeight: layout.maxDrawerHeight,
             isSaved: isSaved,
             pointsDown: layout.pointsDown,
             showsCaret: layout.showsCaret,
@@ -1139,7 +1163,13 @@ private struct DictionaryPopoverOverlay: View {
         cardSize: CGSize,
         baseCompactHeight: CGFloat,
         isExpandedDownward: Bool
-    ) -> (origin: CGPoint, caretCenterX: CGFloat, pointsDown: Bool, showsCaret: Bool) {
+    ) -> (
+        origin: CGPoint,
+        caretCenterX: CGFloat,
+        pointsDown: Bool,
+        showsCaret: Bool,
+        maxDrawerHeight: CGFloat
+    ) {
         let width = SandpaperTheme.dictionaryPopoverWidth
         let columnMinX = max(20, (viewportSize.width - SandpaperTheme.readingColumnWidth) * 0.5)
         let columnMaxX = min(viewportSize.width - 20, columnMinX + SandpaperTheme.readingColumnWidth)
@@ -1152,29 +1182,50 @@ private struct DictionaryPopoverOverlay: View {
         let caretCenterX = min(max(selectionRect.midX - clampedOriginX, 28), width - 28)
 
         let topSafeY = SandpaperTheme.toolbarHeight + SandpaperTheme.progressBarHeight + 12
-        let bottomSafeY = viewportSize.height - SandpaperTheme.statusBarHeight - 12
+        let bottomSafeY = viewportSize.height - SandpaperTheme.statusBarHeight - 14
 
-        // Calculate the compact card's anchor Y first so expanding grows the box DOWNWARD from its top edge
+        // Determine the static top origin Y of the compact card
         let compactAboveY = selectionRect.minY - verticalGap - baseCompactHeight
         let startsAboveSelection = compactAboveY >= topSafeY
-        let baseTopY: CGFloat = startsAboveSelection
+        let rawBaseTopY: CGFloat = startsAboveSelection
             ? compactAboveY
             : min(selectionRect.maxY + verticalGap, max(topSafeY, bottomSafeY - baseCompactHeight))
+        let lockedTopY = max(topSafeY, rawBaseTopY)
+
+        // Available vertical space below the static top section down to the status bar
+        let remainingBelowStaticTop = bottomSafeY - (lockedTopY + baseCompactHeight)
 
         if isExpandedDownward {
-            let clampedExpandedY = max(topSafeY, min(baseTopY, bottomSafeY - cardSize.height))
+            // If the popover opened near the very bottom of the screen, gently lift lockedTopY
+            // only enough to guarantee at least 220pt for the scrollable drawer, while never crossing topSafeY.
+            let minComfortableDrawerHeight: CGFloat = 220
+            let adjustedTopY: CGFloat
+            if remainingBelowStaticTop < minComfortableDrawerHeight {
+                adjustedTopY = max(
+                    topSafeY,
+                    bottomSafeY - (baseCompactHeight + minComfortableDrawerHeight)
+                )
+            } else {
+                adjustedTopY = lockedTopY
+            }
+
+            let availableDrawerSpace = max(150, bottomSafeY - (adjustedTopY + baseCompactHeight))
+            let cappedDrawerHeight = min(360, availableDrawerSpace)
+
             return (
-                CGPoint(x: clampedOriginX, y: clampedExpandedY),
+                CGPoint(x: clampedOriginX, y: adjustedTopY),
                 caretCenterX,
                 startsAboveSelection,
-                !startsAboveSelection
+                !startsAboveSelection && adjustedTopY == lockedTopY,
+                cappedDrawerHeight
             )
         } else {
             return (
-                CGPoint(x: clampedOriginX, y: baseTopY),
+                CGPoint(x: clampedOriginX, y: lockedTopY),
                 caretCenterX,
                 startsAboveSelection,
-                true
+                true,
+                280
             )
         }
     }
@@ -1184,6 +1235,7 @@ private struct DictionaryPopoverCard: View {
     let entry: DictionaryEntry
     let explanation: ContextualExplanationEntry?
     let isExplanationSaved: Bool
+    let maxDrawerHeight: CGFloat
     let isSaved: Bool
     let pointsDown: Bool
     let showsCaret: Bool
@@ -1217,7 +1269,7 @@ private struct DictionaryPopoverCard: View {
             }
 
             VStack(alignment: .leading, spacing: 0) {
-                // Upper Dictionary Content Area
+                // STATIC TOP PORTION: Upper Dictionary Content Area
                 VStack(alignment: .leading, spacing: 0) {
                     HStack(alignment: .center, spacing: 8.5) {
                         Text(entry.expression)
@@ -1301,7 +1353,7 @@ private struct DictionaryPopoverCard: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(SandpaperTheme.canvasBackground)
 
-                // Lower Action Bar
+                // STATIC TOP PORTION: Lower Action Bar
                 HStack(spacing: 12) {
                     Button(action: onToggleSave) {
                         HStack(spacing: 7) {
@@ -1366,11 +1418,12 @@ private struct DictionaryPopoverCard: View {
                 .frame(maxWidth: .infinity)
                 .background(SandpaperTheme.cardBackground)
 
-                // Stage 1: Downward-Expanding Contextual Explanation Drawer
+                // SCROLLABLE BOTTOM PORTION: Downward-Expanding Contextual Explanation Drawer
                 if let explanation {
                     FloatingExplanationDrawerView(
                         explanation: explanation,
                         isNoteSaved: isExplanationSaved,
+                        maxDrawerHeight: maxDrawerHeight,
                         onSaveNote: onSaveExplanationNote,
                         onDockToSidePanel: onDockToSidePanel
                     )

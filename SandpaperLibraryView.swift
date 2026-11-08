@@ -464,28 +464,66 @@ extension BookChapter {
     }
 }
 
-// MARK: - Root Navigation Container (Library <-> Existing Reader)
+// MARK: - Root Navigation Container (Library <-> Reader <-> Personal Lexicon)
+
+enum SandpaperActiveScreen: Equatable {
+    case library
+    case reader(LibraryBook)
+    case vocabulary(initialEntryID: String? = nil)
+}
 
 struct SandpaperRootView: View {
-    @State private var activeBookInReader: LibraryBook? = nil
+    @State private var activeScreen: SandpaperActiveScreen = .library
+    @State private var lastOpenedBook: LibraryBook = MockLibraryData.readingDeskBooks[0]
+    @State private var vocabularyStore = SandpaperVocabularyStore()
 
     var body: some View {
         ZStack {
-            if let activeBook = activeBookInReader {
-                SandpaperReaderView(
-                    chapter: activeBook.sampleChapter,
-                    onBackToLibrary: {
+            switch activeScreen {
+            case .library:
+                SandpaperLibraryView(
+                    onOpenBook: { book in
+                        lastOpenedBook = book
                         withAnimation(.easeInOut(duration: 0.18)) {
-                            activeBookInReader = nil
+                            activeScreen = .reader(book)
+                        }
+                    },
+                    vocabularyStore: vocabularyStore,
+                    onOpenVocabulary: { initialID in
+                        withAnimation(.easeInOut(duration: 0.18)) {
+                            activeScreen = .vocabulary(initialEntryID: initialID)
                         }
                     }
                 )
                 .transition(.opacity)
-            } else {
-                SandpaperLibraryView(
-                    onOpenBook: { book in
+
+            case .reader(let book):
+                SandpaperReaderView(
+                    chapter: book.sampleChapter,
+                    bookID: book.id,
+                    vocabularyStore: vocabularyStore,
+                    onBackToLibrary: {
                         withAnimation(.easeInOut(duration: 0.18)) {
-                            activeBookInReader = book
+                            activeScreen = .library
+                        }
+                    }
+                )
+                .transition(.opacity)
+
+            case .vocabulary(let initialEntryID):
+                SandpaperPersonalLexiconView(
+                    store: vocabularyStore,
+                    initialSelectedEntryID: initialEntryID,
+                    onNavigateToLibrary: {
+                        withAnimation(.easeInOut(duration: 0.18)) {
+                            activeScreen = .library
+                        }
+                    },
+                    onNavigateToReader: { targetBook in
+                        let destinationBook = targetBook ?? lastOpenedBook
+                        lastOpenedBook = destinationBook
+                        withAnimation(.easeInOut(duration: 0.18)) {
+                            activeScreen = .reader(destinationBook)
                         }
                     }
                 )
@@ -494,13 +532,15 @@ struct SandpaperRootView: View {
         }
     }
 }
-
 // MARK: - Library Screen View
 
 struct SandpaperLibraryView: View {
     var onOpenBook: (@MainActor (LibraryBook) -> Void)?
     var onImportFiles: (@MainActor ([URL]) -> Void)?
     var onImportWebArticleURL: (@MainActor (URL) -> Void)?
+    
+    var vocabularyStore: SandpaperVocabularyStore? = nil
+    var onOpenVocabulary: (@MainActor (String?) -> Void)? = nil
 
     @State private var searchText: String = ""
     @State private var selectedCategory: LibraryFilterCategory = .allTitles
@@ -560,7 +600,10 @@ struct SandpaperLibraryView: View {
 
             // 2. Secondary Filter & Quick-Links Bar
             LibrarySecondaryFilterBar(
-                selectedCategory: $selectedCategory
+                selectedCategory: $selectedCategory,
+                onOpenVocabulary: {
+                    onOpenVocabulary?(nil)
+                }
             )
 
             // 3. Main Scrollable Library Content
@@ -653,13 +696,17 @@ struct SandpaperLibraryView: View {
 
                         // Section C: Bottom Split Preview (Vocabulary & Recent Marginalia)
                         LibraryBottomPreviewsSectionView(
-                            vocabularyItems: MockLibraryData.vocabularyPreviewItems,
+                            vocabularyItems: vocabularyStore?.libraryPreviewItems
+                                ?? MockLibraryData.vocabularyPreviewItems,
                             marginaliaItem: MockLibraryData.recentMarginalia,
                             onSelectBookTitle: { bookTitle in
-                                if let match = MockLibraryData.allUniqueBooks.first(where: { $0.title == bookTitle }) {
+                                if let match = MockLibraryData.allUniqueBooks.first(
+                                    where: { $0.title == bookTitle }
+                                ) {
                                     onOpenBook?(match)
                                 }
-                            }
+                            },
+                            onOpenVocabulary: onOpenVocabulary
                         )
                         .padding(.top, 38)
                         .padding(.bottom, 48)
@@ -1013,6 +1060,7 @@ private struct LibraryPrimaryToolbar: View {
 
 private struct LibrarySecondaryFilterBar: View {
     @Binding var selectedCategory: LibraryFilterCategory
+    var onOpenVocabulary: (() -> Void)? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1077,7 +1125,7 @@ private struct LibrarySecondaryFilterBar: View {
 
                 // Right Quick Links (Vocabulary & Marginalia & Notes)
                 HStack(spacing: 22) {
-                    Button(action: {}) {
+                    Button(action: { onOpenVocabulary?() }) {
                         HStack(spacing: 6) {
                             Text("Aᵃ")
                                 .font(.system(size: 12.5, weight: .bold, design: .serif))
@@ -2058,6 +2106,7 @@ private struct LibraryBottomPreviewsSectionView: View {
     let vocabularyItems: [LibraryVocabularyPreviewItem]
     let marginaliaItem: LibraryMarginaliaPreviewItem
     let onSelectBookTitle: (String) -> Void
+    var onOpenVocabulary: ((String?) -> Void)? = nil
 
     var body: some View {
         VStack(spacing: 24) {
@@ -2081,7 +2130,7 @@ private struct LibraryBottomPreviewsSectionView: View {
 
                         Spacer()
 
-                        Button(action: {}) {
+                        Button(action: { onOpenVocabulary?(nil) }) {
                             Text("View Vocabulary")
                                 .font(.system(size: 12.5, weight: .medium))
                                 .foregroundStyle(SandpaperTheme.terracottaAccent)
@@ -2093,7 +2142,9 @@ private struct LibraryBottomPreviewsSectionView: View {
                         ForEach(vocabularyItems) { item in
                             VocabularyPreviewCard(
                                 item: item,
-                                onTapBook: { onSelectBookTitle(item.bookTitle) }
+                                onTapBook: {
+                                    onOpenVocabulary?(item.id)
+                                }
                             )
                         }
                     }

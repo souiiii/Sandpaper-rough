@@ -265,52 +265,79 @@ struct ExplanationActionRowView: View {
     }
 }
 
-// MARK: - Stage 1: Downward-Expanding Floating Explanation Drawer
+// MARK: - Stage 1: Downward-Expanding Scrollable Floating Explanation Drawer
 
 struct FloatingExplanationDrawerView: View {
     let explanation: ContextualExplanationEntry
     let isNoteSaved: Bool
+    var maxDrawerHeight: CGFloat = 300
     let onSaveNote: () -> Void
     let onDockToSidePanel: () -> Void
 
     @State private var didCopy = false
+    @State private var measuredContentHeight: CGFloat = 260
+
+    private var effectiveHeight: CGFloat {
+        min(measuredContentHeight, max(150, maxDrawerHeight))
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            // Static Divider separating the static top portion from the scrollable bottom portion
             Rectangle()
                 .fill(SandpaperTheme.toolbarDivider)
                 .frame(height: 1)
 
-            VStack(alignment: .leading, spacing: 14) {
-                SelectedPassageCardView(
-                    passage: explanation.selectedPassage,
-                    metadata: explanation.locationMetadata,
-                    isCompact: true
+            // Scrollable Bottom Content
+            ScrollView(.vertical, showsIndicators: true) {
+                VStack(alignment: .leading, spacing: 14) {
+                    SelectedPassageCardView(
+                        passage: explanation.selectedPassage,
+                        metadata: explanation.locationMetadata,
+                        isCompact: true
+                    )
+
+                    Text(explanation.explanationTitle)
+                        .font(.system(size: 16, weight: .medium, design: .serif))
+                        .foregroundStyle(SandpaperTheme.primaryInk)
+                        .padding(.top, 2)
+
+                    Text(explanation.explanationBody)
+                        .font(.system(size: 13.5, weight: .regular, design: .serif))
+                        .lineSpacing(5.5)
+                        .foregroundStyle(SandpaperTheme.secondaryInk)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    ExplanationActionRowView(
+                        isNoteSaved: isNoteSaved,
+                        didCopy: didCopy,
+                        onSaveNote: onSaveNote,
+                        onCopy: copyExplanationToPasteboard,
+                        onDockToSidePanel: onDockToSidePanel
+                    )
+                    .padding(.top, 4)
+                }
+                .padding(.horizontal, 21)
+                .padding(.top, 16)
+                .padding(.bottom, 18)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    GeometryReader { contentProxy in
+                        Color.clear
+                            .onAppear {
+                                if contentProxy.size.height > 0 {
+                                    measuredContentHeight = contentProxy.size.height
+                                }
+                            }
+                            .onChange(of: contentProxy.size.height) { _, newHeight in
+                                if newHeight > 0 {
+                                    measuredContentHeight = newHeight
+                                }
+                            }
+                    }
                 )
-
-                Text(explanation.explanationTitle)
-                    .font(.system(size: 16, weight: .medium, design: .serif))
-                    .foregroundStyle(SandpaperTheme.primaryInk)
-                    .padding(.top, 2)
-
-                Text(explanation.explanationBody)
-                    .font(.system(size: 13.5, weight: .regular, design: .serif))
-                    .lineSpacing(5.5)
-                    .foregroundStyle(SandpaperTheme.secondaryInk)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                ExplanationActionRowView(
-                    isNoteSaved: isNoteSaved,
-                    didCopy: didCopy,
-                    onSaveNote: onSaveNote,
-                    onCopy: copyExplanationToPasteboard,
-                    onDockToSidePanel: onDockToSidePanel
-                )
-                .padding(.top, 4)
             }
-            .padding(.horizontal, 21)
-            .padding(.top, 16)
-            .padding(.bottom, 18)
+            .frame(height: effectiveHeight)
             .background(SandpaperTheme.canvasBackground)
         }
     }
